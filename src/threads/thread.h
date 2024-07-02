@@ -4,6 +4,8 @@
 #include <debug.h>
 #include <list.h>
 #include <stdint.h>
+#include "threads/synch.h"
+#include "threads/fixed-point.h"
 
 /** States in a thread's life cycle. */
 enum thread_status
@@ -80,6 +82,10 @@ typedef int tid_t;
    only because they are mutually exclusive: only a thread in the
    ready state is on the run queue, whereas only a thread in the
    blocked state is on a semaphore wait list. */
+
+/** Update: Now the `elem' member can also be used in sleep_list,
+    so it can be used in three ways. */
+
 struct thread
   {
     /* Owned by thread.c. */
@@ -87,11 +93,20 @@ struct thread
     enum thread_status status;          /**< Thread state. */
     char name[16];                      /**< Name (for debugging purposes). */
     uint8_t *stack;                     /**< Saved stack pointer. */
-    int priority;                       /**< Priority. */
+    int priority;                       /**< Own priority. */
     struct list_elem allelem;           /**< List element for all threads list. */
-
-    /* Shared between thread.c and synch.c. */
+    /* Shared among timer.c, thread.c and synch.c. */
     struct list_elem elem;              /**< List element. */
+    
+    /* Alarm Clock */
+    int64_t waketicks;                  /**< Wake up ticks */
+    /* Priority Scheduling */
+    int donate;                         /**< Donate priority. */
+    struct lock *waiting_lock;          /**< Waiting lock */
+    struct list lock_list;              /**< Holding lock list */
+    /*Advanced Scheduler*/
+    int nice;                           /**< Nice value */
+    fixed recent_cpu;                   /**< Received CPU time */
 
 #ifdef USERPROG
     /* Owned by userprog/process.c. */
@@ -137,5 +152,20 @@ int thread_get_nice (void);
 void thread_set_nice (int);
 int thread_get_recent_cpu (void);
 int thread_get_load_avg (void);
+
+void thread_check_yield(void);
+bool greater_priority(const struct list_elem *a,
+                      const struct list_elem *b,
+                      void *aux);
+int true_priority(const struct thread *t);
+
+void thread_update_lock_or_list(struct thread *t);
+void thread_updated_by_lock(struct thread *t);
+
+void calc_load_avg(void);
+void inc_cur_recent_cpu(void);
+void calc_recent_cpu(struct thread *t, void *aux);
+void calc_priority(struct thread *t);
+
 
 #endif /**< threads/thread.h */

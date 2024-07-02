@@ -64,6 +64,7 @@ static char **read_command_line (void);
 static char **parse_options (char **argv);
 static void run_actions (char **argv);
 static void usage (void);
+static void tiny_shell(void);
 
 #ifdef FILESYS
 static void locate_block_devices (void);
@@ -133,7 +134,8 @@ pintos_init (void)
     /* Run actions specified on kernel command line. */
     run_actions (argv);
   } else {
-    // TODO: no command line passed to kernel. Run interactively 
+    /* Run the tiny kernel monitor */
+    tiny_shell();
   }
 
   /* Finish up. */
@@ -431,3 +433,48 @@ locate_block_device (enum block_type role, const char *name)
     }
 }
 #endif
+
+/* A tiny kernel monitor that is required */
+static void
+tiny_shell(void)
+{
+    printf("PKUOS>");
+    char buf[8];
+    size_t p = 0;
+    while (1)
+    {
+      /* Get the characters and output it as it is. */
+      uint8_t c = input_getc();
+      putchar(c);
+      /* Is it a '\r'? */
+      if (c != '\r')
+      {
+        /* No, store it and continue to get input.*/
+        buf[p] = c;
+        if (p < 7)
+          p++;
+      }
+      else
+      {
+        /* Yes, put a '\n' to start a new line.*/
+        putchar('\n');
+        buf[p] = 0;
+        /* And perform the corresponding operation by the stored string.*/
+        if (memcmp(buf, "exit", 4) == 0)
+        {
+          break;
+        }
+        else
+        {
+          if (memcmp(buf, "whoami", 6) == 0)
+            printf("2100013124\n");
+          else
+            printf("invalid command\n");
+          p = 0;
+          printf("PKUOS>");
+          continue;
+        }
+      }
+    }
+    return;
+}

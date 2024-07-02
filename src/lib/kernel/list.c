@@ -439,6 +439,39 @@ list_sort (struct list *list, list_less_func *less, void *aux)
   ASSERT (is_sorted (list_begin (list), list_end (list), less, aux));
 }
 
+/** Sort the element in O(n) time if the list is sorted except for
+   a certain element that we know. This is useful when the priority
+   of a thread changed and the thread is in a priority queue*/
+void
+list_sort_one(struct list_elem *elem, list_less_func *less, void *aux)
+{
+  ASSERT(elem);
+  ASSERT(elem->prev && elem->next);
+  ASSERT(elem->prev->next == elem && elem->next->prev == elem);
+
+  /*Look forward*/
+  struct list_elem *left_elem = elem->prev;
+  if (!is_head(left_elem) && less(elem, left_elem, aux))
+  {
+        while (!is_head(left_elem->prev) && less(elem, left_elem, aux))
+          left_elem = left_elem->prev;
+        list_remove(elem);
+        list_insert(left_elem, elem);
+        return;
+  }
+
+  /*Look backwards*/
+  struct list_elem *right_elem = elem->next;
+  if (!is_tail(right_elem) && !less(elem, right_elem, aux))
+  {
+        while (!is_tail(right_elem) && !less(elem, right_elem, aux))
+          right_elem = right_elem->next;
+        list_remove(elem);
+        list_insert(right_elem->prev, elem);
+        return;
+  }
+}
+
 /** Inserts ELEM in the proper position in LIST, which must be
    sorted according to LESS given auxiliary data AUX.
    Runs in O(n) average case in the number of elements in LIST. */
