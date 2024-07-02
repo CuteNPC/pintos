@@ -4,6 +4,7 @@
 #include <debug.h>
 #include <list.h>
 #include <stdint.h>
+#include <hash.h>
 #include "threads/synch.h"
 
 /** States in a thread's life cycle. */
@@ -131,8 +132,11 @@ struct thread
     struct list file_list;              /**< File list the thread opens. */
     struct list child_list;             /**< Child thread list, for communicating with children. */
     struct child_info *cinfo;           /**< For communicating with parent.*/
-    struct file *protect_file;          /**< Protecting executed files . */
+    struct file *exec_file;             /**< Protecting executed files . */
+#endif
 
+#ifdef VM
+   struct hash page_table;              /**< Supplemental page table */
 #endif
 
     /* Owned by thread.c. */

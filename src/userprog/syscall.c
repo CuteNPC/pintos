@@ -9,6 +9,7 @@
 #include "filesys/file.h"
 #include "filesys/filesys.h"
 #include "devices/input.h"
+#include "vm/page.h"
 
 #define SYSCALL_MAX 20
 typedef void syscall_handler_func(int *, int *);
@@ -17,7 +18,7 @@ typedef void syscall_handler_func(int *, int *);
 static syscall_handler_func *syscall_handler_ptr[SYSCALL_MAX];
 
 /** The number of parameters required for each function. */
-const static int arg_num[SYSCALL_MAX] =
+const int arg_num[SYSCALL_MAX] =
     {0, 1, 1, 1, 2, 1, 1, 1, 3, 3, 2, 1, 1, 2, 1, 1, 1, 2, 1, 1};
 
 static void syscall_handler(struct intr_frame *);
@@ -26,6 +27,7 @@ static int test_args(void *esp);
 static void test_read(char *str);
 static void test_read_size(char *str, int size);
 static void test_write_size(char *str, int size);
+static void set_pinned(void *addr, int size, bool pinned);
 static void syscall_handler_halt(int *, int *);
 static void syscall_handler_exit(int *, int *);
 static void syscall_handler_exec(int *, int *);
@@ -128,6 +130,7 @@ test_read_size(char *str, int size)
         : "m"(*p));
   }
 }
+
 /* Test whether the memory space is writable */
 static void
 test_write_size(char *str, int size)
@@ -137,6 +140,23 @@ test_write_size(char *str, int size)
   /* Try to write*/
   for (int i = 0; i < size; i++)
     str[i] = 0;
+}
+
+/* Pin the page or cancel the pinning, prevent it from eviction */
+static void set_pinned(void *addr, int size, bool pinned)
+{
+  if(size <= 0)
+    return;
+  void *page = pg_round_down(addr);
+  while(page < addr + size)
+  {
+    struct page *p = get_entry(page);
+    if(!p)
+      syscall_handler_error();
+    p->pinned += (pinned ? 1 : -1);
+    page += PGSIZE;
+  }
+  return;
 }
 
 /* The following are the functions that handle system calls */
@@ -224,6 +244,7 @@ syscall_handler_read(int *esp, int *eax)
   char *buffer = (void *)esp[2];
   unsigned size = (unsigned)esp[3];
   test_write_size(buffer, size);
+  set_pinned(buffer, size, true); // pinning
   if (fd == 0)
   {
     for (uint32_t i = 0; i < size; i++)
@@ -241,6 +262,7 @@ syscall_handler_read(int *esp, int *eax)
     *eax = file_read(fp, buffer, size);
     lock_release(&filesys_lock);
   }
+  set_pinned(buffer, size, false); // not pinning
 }
 
 static void
@@ -250,6 +272,7 @@ syscall_handler_write(int *esp, int *eax)
   char *buffer = (void *)esp[2];
   unsigned size = (unsigned)esp[3];
   test_read_size(buffer, size);
+  set_pinned(buffer, size, true); // pinning
   if (fd == 0)
     syscall_handler_error();
   else if (fd == 1)
@@ -266,6 +289,7 @@ syscall_handler_write(int *esp, int *eax)
     *eax = file_write(fp, buffer, size);
     lock_release(&filesys_lock);
   }
+  set_pinned(buffer, size, false); // not pinning
 }
 
 static void

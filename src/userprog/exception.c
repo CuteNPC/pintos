@@ -4,6 +4,16 @@
 #include "userprog/gdt.h"
 #include "threads/interrupt.h"
 #include "threads/thread.h"
+#include "threads/vaddr.h"
+#include "userprog/pagedir.h"
+#include "vm/page.h"
+#include "vm/frame.h"
+#include "vm/swap.h"
+#include "filesys/filesys.h"
+#include "filesys/file.h"
+#include "threads/malloc.h"
+#include "threads/thread.h"
+#include "userprog/process.h"
 
 /** Number of page faults processed. */
 static long long page_fault_cnt;
@@ -147,6 +157,11 @@ page_fault (struct intr_frame *f)
   not_present = (f->error_code & PF_P) == 0;
   write = (f->error_code & PF_W) != 0;
   user = (f->error_code & PF_U) != 0;
+
+  /* Try to fix the page_fault */
+  if (not_present && fault_addr < PHYS_BASE)
+      if(page_fault_fix(pg_round_down(fault_addr)))
+         return;
 
   /* When an illegal address is referenced, make this thread exit */
   thread_current()->return_value = -1;

@@ -15,6 +15,10 @@
 #include "userprog/process.h"
 #include "threads/malloc.h"
 #endif
+#ifdef VM
+#include <hash.h>
+#include "vm/page.h"
+#endif
 
 /** Random value for struct thread's `magic' member.
    Used to detect stack overflow.  See the big comment at the top
@@ -191,6 +195,9 @@ thread_create (const char *name, int priority,
     return TID_ERROR;
   }
   list_push_front(&thread_current()->child_list, &t->cinfo->elem);
+
+  /* Initialize supplemental page table */
+  hash_init(&t->page_table, hash_page_func, less_page_func, NULL);
 
   /* Stack frame for kernel_thread(). */
   kf = alloc_frame (t, sizeof *kf);
