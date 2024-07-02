@@ -198,6 +198,7 @@ thread_create (const char *name, int priority,
 
   /* Initialize supplemental page table */
   hash_init(&t->page_table, hash_page_func, less_page_func, NULL);
+  t->stack_bound = PHYS_BASE;
 
   /* Stack frame for kernel_thread(). */
   kf = alloc_frame (t, sizeof *kf);
@@ -482,6 +483,7 @@ init_thread (struct thread *t, const char *name, int priority)
 
   list_init(&t->file_list);
   list_init(&t->child_list);
+  list_init(&t->mmap_list);
 
   old_level = intr_disable ();
   list_push_back (&all_list, &t->allelem);

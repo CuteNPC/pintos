@@ -160,7 +160,7 @@ page_fault (struct intr_frame *f)
 
   /* Try to fix the page_fault */
   if (not_present && fault_addr < PHYS_BASE)
-      if(page_fault_fix(pg_round_down(fault_addr)))
+      if(page_fault_fix(fault_addr, f->esp))
          return;
 
   /* When an illegal address is referenced, make this thread exit */

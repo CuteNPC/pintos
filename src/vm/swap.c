@@ -26,7 +26,7 @@ void swap_read(void *addr, int *place)
     lock_release(&swap_lock);
 }
 
-/* write to the swap, save the write place in the 'place'*/
+/* write to the swap, save the write place in the 'place' */
 void swap_write(void *addr, int *place)
 {
     lock_acquire(&swap_lock);

@@ -4,6 +4,7 @@
 #include "threads/interrupt.h"
 #include "threads/thread.h"
 #include "threads/vaddr.h"
+#include "threads/malloc.h"
 #include "devices/shutdown.h"
 #include "userprog/process.h"
 #include "filesys/file.h"
@@ -124,7 +125,7 @@ test_read_size(char *str, int size)
     syscall_handler_error();
   for (char *p = str; p != str + size; p++)
   {
-  /* Try to read*/
+    /* Try to read*/
     asm("movl $1f, %0; movzbl %1, %0; 1:"
         : "=&a"(result)
         : "m"(*p));
@@ -145,13 +146,13 @@ test_write_size(char *str, int size)
 /* Pin the page or cancel the pinning, prevent it from eviction */
 static void set_pinned(void *addr, int size, bool pinned)
 {
-  if(size <= 0)
+  if (size <= 0)
     return;
   void *page = pg_round_down(addr);
-  while(page < addr + size)
+  while (page < addr + size)
   {
     struct page *p = get_entry(page);
-    if(!p)
+    if (!p)
       syscall_handler_error();
     p->pinned += (pinned ? 1 : -1);
     page += PGSIZE;
@@ -333,15 +334,47 @@ syscall_handler_close(int *esp, int *eax UNUSED)
 static void
 syscall_handler_mmap(int *esp UNUSED, int *eax UNUSED)
 {
-  printf("Not implemented yet!\n");
-  thread_exit();
+  int fd = esp[1];
+  void *upage = (void *)esp[2];
+  *eax = -1;
+  if (fd == 0 || fd == 1 || upage == NULL || pg_ofs(upage))
+    return;
+  struct file *fp = fd_to_fp(fd);
+  if (!fp)
+    return;
+
+  lock_acquire(&filesys_lock);
+  struct file *fp_re = file_reopen(fp);
+  int read_bytes = file_length(fp);
+  lock_release(&filesys_lock);
+  if (read_bytes == 0)
+    return;
+
+  for(void *addr = upage; addr < upage + read_bytes; addr += PGSIZE)
+    if (get_entry(addr))
+      return;
+
+  *eax = allocate_mapid(upage, read_bytes);
+
+  off_t ofs = 0;
+  while (read_bytes > 0)
+  {
+    size_t page_read_bytes = read_bytes < PGSIZE ? read_bytes : PGSIZE;
+    struct page *p = new_page(upage, true, MMAP, fp_re,
+                              ofs, page_read_bytes);
+    if (p == NULL)
+      syscall_handler_error();
+    ofs += page_read_bytes;
+    read_bytes -= page_read_bytes;
+    upage += PGSIZE;
+  }
 }
 
 static void
 syscall_handler_munmap(int *esp UNUSED, int *eax UNUSED)
 {
-  printf("Not implemented yet!\n");
-  thread_exit();
+  int mapid = esp[1];
+  free_mapid(mapid);
 }
 
 static void

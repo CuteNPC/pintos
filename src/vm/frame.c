@@ -9,6 +9,8 @@
 #include "vm/frame.h"
 #include "vm/swap.h"
 #include "threads/malloc.h"
+#include "filesys/file.h"
+#include "filesys/filesys.h"
 #include <string.h>
 #include <stdio.h>
 
@@ -60,24 +62,38 @@ static void evict_and_clear(struct frame *evict_f)
     uint32_t *evict_vaddr = evict_p->vaddr;
     uint32_t *evict_faddr = evict_f->faddr;
 
+    bool dirty = pagedir_is_dirty(evict_pd, evict_vaddr);
     /* clear pagedir entry */
     pagedir_clear_page(evict_pd, evict_vaddr);
     evict_f->p = NULL;
     evict_p->f = NULL;
 
-    /* if it is dirty, set the save resource to the swap */
-    if (pagedir_is_dirty(evict_p->t->pagedir, evict_vaddr))
+    if (evict_p->src != MMAP)
     {
-        pagedir_set_dirty(evict_p->t->pagedir, evict_vaddr, false);
-        evict_p->src = SWAP;
+        /* If it is not frome a mmap file */
+        if (dirty)
+            /* If it is dirty, change the src to the swap place */
+            /* or it can be load from the disk again */
+            evict_p->src = SWAP;
+        if (evict_p->src == SWAP)
+            swap_write(evict_faddr, &evict_p->swap_place);
     }
-    /* write back to the swap, get the place it is write in the swap */
-    if (evict_p->src == SWAP)
-        swap_write(evict_faddr, &evict_p->swap_place);
+    else
+    {
+        /* If it is from a mmap file and is dirty, write back to the file */
+        if (dirty)
+        {
+            lock_acquire(&filesys_lock);
+            file_write_at(evict_p->fp, evict_faddr,
+                          evict_p->read_bytes, evict_p->ofs);
+            lock_release(&filesys_lock);
+        }
+    }
+
     evict_p->active = false;
 
     /* clear it so we can reuse it */
-    memset(evict_f->faddr, 0, PGSIZE);
+    memset(evict_faddr, 0, PGSIZE);
 }
 
 /* Clock Algorithm, select one frame to evict */

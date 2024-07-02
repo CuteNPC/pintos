@@ -137,6 +137,8 @@ struct thread
 
 #ifdef VM
    struct hash page_table;              /**< Supplemental page table */
+   void* stack_bound;                   /**< Lower bound of the stack */
+   struct list mmap_list;                /**< Mmap file list */
 #endif
 
     /* Owned by thread.c. */

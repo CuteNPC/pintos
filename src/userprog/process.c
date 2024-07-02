@@ -21,6 +21,7 @@
 #include "vm/frame.h"
 #include "vm/page.h"
 #include "vm/swap.h"
+#include <hash.h>
 
 /** This structure is used to pass parameters 
  *  It also contains a semaphore and a loading status, which is used to 
@@ -227,7 +228,16 @@ process_exit (void)
 
   /* Destroy and free the supplemental page table,
      free the space of the frame*/
-  free_page_table(&cur->page_table);
+  struct hash* page_table =&cur->page_table;
+  for (size_t i = 0; i < page_table->bucket_cnt; i++)
+    while (!list_empty(&page_table->buckets[i]))
+    {
+      struct list_elem *e = list_pop_front(&page_table->buckets[i]);
+      free_one_page(hash_entry((struct hash_elem *)e, struct page, elem));
+    }
+  free(page_table->buckets);
+  while (!list_empty(&cur->mmap_list))
+    free(list_entry(list_pop_front(&cur->mmap_list), struct mmap_file, elem));
 
   /* Destroy the current process's page directory and switch back
      to the kernel-only page directory. */
@@ -357,7 +367,6 @@ struct Elf32_Phdr
 #define PF_W 2          /**< Writable. */
 #define PF_R 4          /**< Readable. */
 
-static bool setup_stack (void **esp);
 static bool validate_segment (const struct Elf32_Phdr *, struct file *);
 static bool load_segment (struct file *file, off_t ofs, uint8_t *upage,
                           uint32_t read_bytes, uint32_t zero_bytes,
@@ -466,7 +475,8 @@ load (const char *file_name, void (**eip) (void), void **esp)
     }
 
   /* Set up stack. */
-  if (!setup_stack (esp))
+  t->stack_bound = *esp = PHYS_BASE - PGSIZE;
+  if (!new_stack_page (PHYS_BASE - PGSIZE))
     goto done;
 
   /* Start address. */
@@ -547,7 +557,6 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
   ASSERT (pg_ofs (upage) == 0);
   ASSERT (ofs % PGSIZE == 0);
 
-  struct thread* cur = thread_current();
   while (read_bytes > 0 || zero_bytes > 0) 
     {
       /* Calculate how to fill this page.
@@ -557,22 +566,8 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
       size_t page_zero_bytes = PGSIZE - page_read_bytes;
 
       /* Set the supplemental page table for lazy loading */
-      struct page* p = malloc(sizeof(struct page));
-      if(p == NULL)
+      if(!new_page(upage, writable, DISK, file, ofs, page_read_bytes))
         return false;
-      p->t = cur;
-      p->vaddr = upage;
-      p->writable = writable;
-      p->pinned = 0;
-      p->swap_place = -1;
-      p->f = NULL;
-      p->fp = file;
-      p->ofs = ofs;
-      p->read_bytes = page_read_bytes;
-      /* if page_read_bytes is 0, set src to ZERO, else set to DISK */
-      p->src = page_read_bytes == 0 ? ZERO : DISK;
-      p->active = false;
-      hash_insert(&cur->page_table,&p->elem);
 
       /* Advance. */
       ofs += page_read_bytes;
@@ -580,31 +575,5 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
       zero_bytes -= page_zero_bytes;
       upage += PGSIZE;
     }
-  return true;
-}
-
-/** Create a minimal stack by mapping a zeroed page at the top of
-   user virtual memory. */
-static bool
-setup_stack (void **esp) 
-{
-  /* Set the supplemental page table for lazy loading */
-  struct page* p = malloc(sizeof(struct page));
-  if(p == NULL)
-    return false;
-  p->t = thread_current();
-  p->vaddr = PHYS_BASE - PGSIZE;
-  p->writable = true;
-  p->pinned = 0;
-  p->swap_place = -1;
-  p->f = NULL;
-  p->fp = NULL;
-  p->ofs = 0;
-  p->read_bytes = 0;
-  /* initialize the stack to zero */
-  p->src = ZERO;
-  p->active = false;
-  *esp = PHYS_BASE;
-  hash_insert(&p->t->page_table,&p->elem);
   return true;
 }
