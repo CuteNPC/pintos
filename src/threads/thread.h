@@ -4,6 +4,7 @@
 #include <debug.h>
 #include <list.h>
 #include <stdint.h>
+#include "threads/synch.h"
 
 /** States in a thread's life cycle. */
 enum thread_status
@@ -23,6 +24,36 @@ typedef int tid_t;
 #define PRI_MIN 0                       /**< Lowest priority. */
 #define PRI_DEFAULT 31                  /**< Default priority. */
 #define PRI_MAX 63                      /**< Highest priority. */
+
+struct file_fd
+{
+   int fd;
+   struct file *file;
+   struct list_elem elem;
+};
+
+/** Data structure for communacation between parent and child.
+  * This structure is included in the parent's 'child_list' 
+  * and also pointed to by the child's pointer 'cinfo'.
+  * But the space for this structure is independently allocated,
+  * and it is only freed when both parents and children exit. */
+
+struct child_info
+{
+   tid_t tid;                           /**< Child's tid (also pid). */
+   int return_value;                    /**< Exit code, if child has exited. */
+   int wait_once;                       /**< To check if the parent waits it twice. */
+   struct semaphore wait_sema;          /**< The semaphore for system call "wait". */
+   
+   int exit_flag;                       /**< If parent and child exit.*/
+   struct lock exit_flag_lock;          /**< For synchronize access to exit_flag.*/
+   
+   struct list_elem elem;               /**< List element. */
+};
+
+/** Value used for struct child_info::exit_flag */
+#define PARENT_EXIT 0x2
+#define CHILD_EXIT 0x1
 
 /** A kernel thread or user process.
 
@@ -96,6 +127,12 @@ struct thread
 #ifdef USERPROG
     /* Owned by userprog/process.c. */
     uint32_t *pagedir;                  /**< Page directory. */
+    int return_value;                   /**< Exit code / Return value. */
+    struct list file_list;              /**< File list the thread opens. */
+    struct list child_list;             /**< Child thread list, for communicating with children. */
+    struct child_info *cinfo;           /**< For communicating with parent.*/
+    struct file *protect_file;          /**< Protecting executed files . */
+
 #endif
 
     /* Owned by thread.c. */
@@ -137,5 +174,14 @@ int thread_get_nice (void);
 void thread_set_nice (int);
 int thread_get_recent_cpu (void);
 int thread_get_load_avg (void);
+
+/** File descriptor interface. */
+int allocate_fd(struct file *fp);
+struct file *fd_to_fp(int fd);
+void free_fd(int fd);
+
+/** "struct child_info" allocate and free. */
+struct child_info *allocate_cinfo(tid_t tid);
+void try_free_cinfo(struct child_info *cinfo, int flag);
 
 #endif /**< threads/thread.h */

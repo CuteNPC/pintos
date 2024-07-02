@@ -17,54 +17,169 @@
 #include "threads/palloc.h"
 #include "threads/thread.h"
 #include "threads/vaddr.h"
+#include "threads/malloc.h"
+
+/** This structure is used to pass parameters 
+ *  It also contains a semaphore and a loading status, which is used to 
+ *  transfer the loading status from the child to the parent process */
+/*  See comment of 'args_parsing' function for more detail */
+struct args_info
+{
+  int ret_addr;    /**< Return address, must be set to zero */
+  int argc;        /**< Number of arguments */
+  char **argv;     /**< Pointer of argv[], must be set to the address of buffer*/
+  char buffer[LOADER_ARGS_LEN * 3 + 12];
+                   /**< Buffer used to store argv pointers and strings */
+  char copy_of_cmd_line[LOADER_ARGS_LEN + 4];
+                   /**< Used to handle strings  */
+  int stack_size;  /**< Stack size */
+  char *name;      /**< Name of the new thread, */
+
+  int load_success;/**< Flag of loading. The child passed to the parent */
+  struct semaphore load_lock;
+                   /**< Lock used by the parent to wait for the child to load */
+};
 
 static thread_func start_process NO_RETURN;
 static bool load (const char *cmdline, void (**eip) (void), void **esp);
+void args_parsing(const char *, struct args_info *);
+
+/** Parsing argument function */
+/*  In this function, we construct 'struct arg_info' like
+ *  the stack of the new thread. So in start_process function,
+ *  we just copy the memory directly to the real stack!
+ *  we only copy the useful part, so the memory space is not wasted*/
+void
+args_parsing(const char *cmd_line, struct args_info *args)
+{
+  /* Set ret_addr, argc, the end of the buffer to 0 */
+  args->ret_addr = args->argc = args->copy_of_cmd_line[-1] = 0;
+  args->argv = (char **)&(args->buffer);
+
+  /* Copy cmd_line to args->copy_of_cmd_line for processing*/
+  strlcpy(args->copy_of_cmd_line, cmd_line, LOADER_ARGS_LEN);
+
+  /* Turn all spaces of copy_of_cmd_line into \0
+     Record the number of arguments.*/
+  char *p1;
+  for (p1 = args->copy_of_cmd_line; *p1; p1++)
+    if (*p1 == ' ')
+      *p1 = 0;
+    else if (!*(p1 - 1))
+      args->argc++;
+  args->argv[args->argc] = NULL;
+
+  /* Now that we know the number of arguments, we can determine 
+     the place to store the argument string.
+     Now copy the arguments string from copy_of_cmd_line to the 
+     right place, and make argv[] point to them*/
+  char *psrc = args->copy_of_cmd_line;
+  char *pdes = (char *)(args->argv + args->argc + 1);
+  char *pend = p1 + 1;
+  int index = 0;
+  while (psrc != pend)
+  {
+    if (*psrc)
+    {
+      if (!*(psrc - 1))
+        args->argv[index++] = pdes;
+      *pdes++ = *psrc;
+    }
+    else
+    {
+      if (*(psrc - 1))
+        *pdes++ = 0;
+    }
+    psrc++;
+  }
+  /*Program Name*/
+  args->name = args->argv[0];
+  /* The size of the stack, which should include the range from 
+   * ret_addr to a portion of the buffer */
+  args->stack_size = (pend - (char *)args + 3) & (-4);
+
+  /*When we copy, the memory location changes,
+  So we need to make an offset to the pointer beforehand*/
+  int offset = (PHYS_BASE - args->stack_size - (void *)(args));
+  for (int i = 0; i < args->argc; i++)
+    args->argv[i] += offset;
+  args->argv += offset / 4;
+}
 
 /** Starts a new thread running a user program loaded from
    FILENAME.  The new thread may be scheduled (and may even exit)
    before process_execute() returns.  Returns the new process's
    thread id, or TID_ERROR if the thread cannot be created. */
-tid_t
-process_execute (const char *file_name) 
+
+tid_t process_execute(const char *cmd_line)
 {
-  char *fn_copy;
-  tid_t tid;
-
-  /* Make a copy of FILE_NAME.
-     Otherwise there's a race between the caller and load(). */
-  fn_copy = palloc_get_page (0);
-  if (fn_copy == NULL)
+  struct args_info *args = malloc(sizeof(struct args_info));
+  if (args == NULL)
     return TID_ERROR;
-  strlcpy (fn_copy, file_name, PGSIZE);
+  /* Parsing argument */
+  args_parsing(cmd_line, args);
+  /* Stack too large, refused to load */
+  if(args->stack_size > PGSIZE)
+  {
+    free(args);
+    return TID_ERROR;
+  }
 
+  sema_init(&args->load_lock, 0);
   /* Create a new thread to execute FILE_NAME. */
-  tid = thread_create (file_name, PRI_DEFAULT, start_process, fn_copy);
-  if (tid == TID_ERROR)
-    palloc_free_page (fn_copy); 
+  tid_t tid;
+  tid = thread_create(args->name, PRI_DEFAULT, start_process, args);
+  if (tid != TID_ERROR)
+  {
+    /*Waiting for child to load*/
+    sema_down(&args->load_lock);
+    if (!args->load_success)
+      tid = TID_ERROR;
+  }
+  free(args);
   return tid;
 }
 
 /** A thread function that loads a user process and starts it
    running. */
 static void
-start_process (void *file_name_)
+start_process(void *args_)
 {
-  char *file_name = file_name_;
+  struct args_info *args = args_;
+  struct thread *cur = thread_current();
   struct intr_frame if_;
-  bool success;
 
   /* Initialize interrupt frame and load executable. */
   memset (&if_, 0, sizeof if_);
   if_.gs = if_.fs = if_.es = if_.ds = if_.ss = SEL_UDSEG;
   if_.cs = SEL_UCSEG;
   if_.eflags = FLAG_IF | FLAG_MBS;
-  success = load (file_name, &if_.eip, &if_.esp);
 
-  /* If load failed, quit. */
-  palloc_free_page (file_name);
-  if (!success) 
-    thread_exit ();
+  /*Pass information of loading result to the parent by 'args'*/
+  args->load_success = load(args->name, &if_.eip, &if_.esp);
+  if (args->load_success)
+  {
+    /*Set esp pointer*/
+    if_.esp = PHYS_BASE - args->stack_size;
+    /* Copy the memory directly! */
+    memcpy(if_.esp, args, args->stack_size);
+
+    /* Protecting executed files */
+    lock_acquire(&filesys_lock);
+    cur->protect_file = filesys_open(args->name);
+    file_deny_write(cur->protect_file);
+    lock_release(&filesys_lock);
+    /* Release the semaphore to wake up parent*/
+    sema_up(&args->load_lock);
+  }
+  else
+  {
+    /* Release the semaphore to wake up parent*/
+    sema_up(&args->load_lock);
+    cur->return_value = -1;
+    /* If loading fails, exit*/
+    thread_exit();
+  }
 
   /* Start the user process by simulating a return from an
      interrupt, implemented by intr_exit (in
@@ -81,13 +196,24 @@ start_process (void *file_name_)
    exception), returns -1.  If TID is invalid or if it was not a
    child of the calling process, or if process_wait() has already
    been successfully called for the given TID, returns -1
-   immediately, without waiting.
-
-   This function will be implemented in problem 2-2.  For now, it
-   does nothing. */
-int
-process_wait (tid_t child_tid UNUSED) 
+   immediately, without waiting. */
+int process_wait(tid_t child_tid)
 {
+  struct list *lst = &thread_current()->child_list;
+  struct list_elem *e;
+  for (e = list_begin(lst); e != list_end(lst); e = list_next(e))
+  {
+    struct child_info *cinfo = list_entry(e, struct child_info, elem);
+    if (cinfo->tid == child_tid)
+    {
+      if (cinfo->wait_once == 1)
+      /* Called twice */
+        return -1;
+      sema_down(&cinfo->wait_sema);
+      cinfo->wait_once = 1;
+      return cinfo->return_value;
+    }
+  }
   return -1;
 }
 
@@ -114,6 +240,37 @@ process_exit (void)
       pagedir_activate (NULL);
       pagedir_destroy (pd);
     }
+
+  struct list *lst;
+  struct list_elem *e;
+
+  /* Close all open files and file descriptor */
+  lst = &cur->file_list;
+  lock_acquire(&filesys_lock);
+  file_close(cur->protect_file); /* Cancel the protect of executed files */
+  for (e = list_begin(lst); e != list_end(lst); e = list_next(e))
+    file_close(list_entry(e, struct file_fd, elem)->file);
+  lock_release(&filesys_lock);
+  while (!list_empty(lst))
+    free(list_entry(list_pop_front(lst), struct file_fd, elem));
+
+  printf("%s: exit(%d)\n", cur->name, cur->return_value);
+  /* Set exit value, and release waiting semaphore */
+  cur->cinfo->return_value = cur->return_value;
+  sema_up(&cur->cinfo->wait_sema);
+
+  /* As a child process, Check if 'child_info' needs freed*/
+  try_free_cinfo(cur->cinfo, CHILD_EXIT);
+  lst = &cur->child_list;
+  e = list_begin(lst);
+  while (e != list_end(lst))
+  {
+    struct list_elem *tmpe = list_next(e);
+  /* As a parent process, Check if 'child_info' needs freed*/
+    try_free_cinfo(list_entry(e, struct child_info, elem), PARENT_EXIT);
+    e = tmpe;
+  }
+  return;
 }
 
 /** Sets up the CPU for running user code in the current

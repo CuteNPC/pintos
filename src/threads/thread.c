@@ -13,6 +13,7 @@
 #include "threads/vaddr.h"
 #ifdef USERPROG
 #include "userprog/process.h"
+#include "threads/malloc.h"
 #endif
 
 /** Random value for struct thread's `magic' member.
@@ -182,6 +183,14 @@ thread_create (const char *name, int priority,
   /* Initialize thread. */
   init_thread (t, name, priority);
   tid = t->tid = allocate_tid ();
+
+  t->cinfo = allocate_cinfo(tid);
+  if (!t->cinfo)
+  {
+    palloc_free_page(t);
+    return TID_ERROR;
+  }
+  list_push_front(&thread_current()->child_list, &t->cinfo->elem);
 
   /* Stack frame for kernel_thread(). */
   kf = alloc_frame (t, sizeof *kf);
@@ -464,6 +473,9 @@ init_thread (struct thread *t, const char *name, int priority)
   t->priority = priority;
   t->magic = THREAD_MAGIC;
 
+  list_init(&t->file_list);
+  list_init(&t->child_list);
+
   old_level = intr_disable ();
   list_push_back (&all_list, &t->allelem);
   intr_set_level (old_level);
@@ -582,3 +594,86 @@ allocate_tid (void)
 /** Offset of `stack' member within `struct thread'.
    Used by switch.S, which can't figure it out on its own. */
 uint32_t thread_stack_ofs = offsetof (struct thread, stack);
+
+/** Assign a file descriptor, associate it with a file.
+  * Traverse the open file list and find the smallest unused descriptor */
+int allocate_fd(struct file *fp)
+{
+  struct list *lst;
+  struct list_elem *e;
+  lst = &thread_current()->file_list;
+  int fd = 2;
+  for (e = list_begin(lst); e != list_end(lst); e = list_next(e))
+  {
+    struct file_fd *f = list_entry(e, struct file_fd, elem);
+    if (f->fd != fd)
+      break;
+    fd++;
+  }
+  struct file_fd *new_f = malloc(sizeof(struct file_fd));
+  if (!new_f)
+    return -1;
+  new_f->file = fp;
+  new_f->fd = fd;
+  list_insert(e, &new_f->elem);
+  return new_f->fd;
+}
+
+/** Transform file descriptor to file pointer */
+struct file *fd_to_fp(int fd)
+{
+  struct list *lst;
+  struct list_elem *e;
+  lst = &thread_current()->file_list;
+  for (e = list_begin(lst); e != list_end(lst); e = list_next(e))
+  {
+    struct file_fd *f = list_entry(e, struct file_fd, elem);
+    if (f->fd == fd)
+      return f->file;
+  }
+  return NULL;
+}
+
+/** Free file descriptor */
+void free_fd(int fd)
+{
+  struct list *lst;
+  struct list_elem *e;
+  lst = &thread_current()->file_list;
+  for (e = list_begin(lst); e != list_end(lst); e = list_next(e))
+  {
+    struct file_fd *f = list_entry(e, struct file_fd, elem);
+    if (f->fd == fd)
+    {
+      list_remove(&f->elem);
+      free(f);
+      return;
+    }
+  }
+}
+
+/** When child is created, allocate child_info for it*/
+struct child_info *allocate_cinfo(tid_t tid)
+{
+  struct child_info *cinfo;
+  cinfo = malloc(sizeof(struct child_info));
+  if (!cinfo)
+    return NULL;
+  cinfo->tid = tid;
+  cinfo->wait_once = 0;
+  cinfo->exit_flag = 0;
+  lock_init(&cinfo->exit_flag_lock);
+  sema_init(&cinfo->wait_sema, 0);
+  return cinfo;
+}
+
+/** When child or parent exit, check if the child_info needs freed*/
+void try_free_cinfo(struct child_info *cinfo, int flag)
+{
+  lock_acquire(&cinfo->exit_flag_lock);
+  cinfo->exit_flag |= flag;
+  int free_flag = (cinfo->exit_flag == (CHILD_EXIT | PARENT_EXIT));
+  lock_release(&cinfo->exit_flag_lock);
+  if (free_flag)
+    free(cinfo);
+}
